@@ -128,3 +128,14 @@ Only then consider advanced networking features:
 Prefer the simplest code that makes the current feature correct. The server is
 authoritative, `game` owns Sudoku rules, and the UI renders the latest server
 state. That is enough for a solid multiplayer Sudoku game.
+
+## Run 
+
+1. Run the server first as 
+```shell
+go run . -mode server
+```
+2. Run the client 
+```shell
+go run . -mode client
+```

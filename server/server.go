@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/gorilla/websocket"
 	"github.com/sagnikc395/sudoku/game"
-	"golang.org/x/net/websocket"
 )
 
 type Move struct {
@@ -21,40 +21,65 @@ type BoardState struct {
 type Server struct {
 	mu      sync.Mutex
 	game    game.Game
-	clients map[*websocket.Conn]struct{}
+	clients map[*client]struct{}
+}
+
+// client serializes writes because gorilla/websocket permits one concurrent
+// reader and one concurrent writer per connection.
+type client struct {
+	conn    *websocket.Conn
+	writeMu sync.Mutex
+}
+
+func (c *client) writeJSON(value any) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.conn.WriteJSON(value)
+}
+
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(*http.Request) bool { return true },
 }
 
 func ListenAndServe(addr string) error {
-	s := &Server{clients: make(map[*websocket.Conn]struct{})}
+	s := &Server{clients: make(map[*client]struct{})}
 	mux := http.NewServeMux()
-	mux.Handle("/ws", websocket.Handler(s.handleClient))
+	mux.HandleFunc("/ws", s.handleClient)
 	return http.ListenAndServe(addr, mux)
 }
 
-func (s *Server) handleClient(ws *websocket.Conn) {
+func (s *Server) handleClient(w http.ResponseWriter, r *http.Request) {
+	ws, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("upgrade websocket: %v", err)
+		return
+	}
+	client := &client{conn: ws}
+
 	s.mu.Lock()
-	s.clients[ws] = struct{}{}
+	s.clients[client] = struct{}{}
 	state := BoardState{Grid: s.game.Grid}
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
-		delete(s.clients, ws)
+		delete(s.clients, client)
 		s.mu.Unlock()
 		ws.Close()
 	}()
 
-	if err := websocket.JSON.Send(ws, state); err != nil {
+	if err := client.writeJSON(state); err != nil {
 		return
 	}
 
 	for {
 		var move Move
-		if err := websocket.JSON.Receive(ws, &move); err != nil {
+		if err := ws.ReadJSON(&move); err != nil {
 			return
 		}
 
 		s.mu.Lock()
 		accepted := s.game.SetCell(move.Cell, move.Value)
+		log.Printf("sending the message %v", accepted)
 		state = BoardState{Grid: s.game.Grid}
 		s.mu.Unlock()
 		if accepted {
@@ -65,14 +90,14 @@ func (s *Server) handleClient(ws *websocket.Conn) {
 
 func (s *Server) broadcast(state BoardState) {
 	s.mu.Lock()
-	clients := make([]*websocket.Conn, 0, len(s.clients))
+	clients := make([]*client, 0, len(s.clients))
 	for client := range s.clients {
 		clients = append(clients, client)
 	}
 	s.mu.Unlock()
 
 	for _, client := range clients {
-		if err := websocket.JSON.Send(client, state); err != nil {
+		if err := client.writeJSON(state); err != nil {
 			log.Printf("broadcast failed: %v", err)
 		}
 	}

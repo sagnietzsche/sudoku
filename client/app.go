@@ -2,22 +2,29 @@ package client
 
 import (
 	"log"
+	"sync"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
 	"fyne.io/fyne/v2/widget"
+	"github.com/gorilla/websocket"
 	"github.com/sagnikc395/sudoku/server"
-	"golang.org/x/net/websocket"
 )
 
 // Run opens the GUI and connects it to one Sudoku server.
 func Run(serverURL string) {
-	conn, err := websocket.Dial(serverURL, "", "http://localhost/")
+	conn, _, err := websocket.DefaultDialer.Dial(serverURL, nil)
 	if err != nil {
 		log.Fatal("connect to server: ", err)
 	}
 	defer conn.Close()
+	var writeMu sync.Mutex
+	writeMove := func(move server.Move) error {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		return conn.WriteJSON(move)
+	}
 
 	a := app.New()
 	w := a.NewWindow("Sudoku")
@@ -29,7 +36,7 @@ func Run(serverURL string) {
 		cell := cell
 		buttons[cell] = widget.NewButton("", func() {
 			// GUI event -> backend event. The server sends the new board back.
-			if err := websocket.JSON.Send(conn, server.Move{Cell: uint8(cell), Value: 1}); err != nil {
+			if err := writeMove(server.Move{Cell: uint8(cell), Value: 1}); err != nil {
 				log.Println("send move:", err)
 			}
 		})
@@ -41,7 +48,7 @@ func Run(serverURL string) {
 	go func() {
 		for {
 			var state server.BoardState
-			if err := websocket.JSON.Receive(conn, &state); err != nil {
+			if err := conn.ReadJSON(&state); err != nil {
 				return
 			}
 			fyne.Do(func() {
